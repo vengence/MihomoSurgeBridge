@@ -1,0 +1,11 @@
+.build/
+dist/
+.DS_Store
+.superpowers/
+Package.resolved.tmp
+*.msbridge
+*.log
+
+# Local runtime data and real subscriptions must never be committed.
+MihomoSurgeBridgeData/
+Fixtures/Private/
