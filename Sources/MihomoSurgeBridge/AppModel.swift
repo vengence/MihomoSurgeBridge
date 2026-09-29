@@ -401,9 +401,10 @@ final class AppModel: ObservableObject {
             )
         }.value
         if let result, result.status == 0 {
-            statusMessage = "代理连通性测试通过：\(node.displayName)"
+            statusMessage = "首个节点连通性测试通过：\(node.displayName)"
         } else {
-            statusMessage = "连通性测试失败，请查看 Mihomo 日志"
+            let detail = result.map { "curl 退出码 \($0.status)" } ?? "测试命令未能启动"
+            statusMessage = "首个节点测试失败：\(node.displayName)（\(detail)）。其他节点未测试，请查看 Mihomo 日志"
         }
         isBusy = false
     }

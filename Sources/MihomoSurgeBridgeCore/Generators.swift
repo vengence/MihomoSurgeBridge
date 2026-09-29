@@ -11,11 +11,12 @@ public enum ConfigurationGenerator {
             var fields = node.fields.mapValues(\.anyValue)
             fields["name"] = node.internalName
             fields["type"] = "ssr"
+            if let outboundInterface { fields["interface-name"] = outboundInterface }
             return fields
         }
         let users = nodes.map { ["username": $0.username, "password": $0.password] }
         let rules = nodes.map { "IN-USER,\($0.username),\($0.internalName)" } + ["MATCH,REJECT"]
-        var root: [String: Any] = [
+        let root: [String: Any] = [
             "mode": "rule",
             "log-level": "warning",
             "ipv6": true,
@@ -31,7 +32,6 @@ public enum ConfigurationGenerator {
             "proxies": proxies,
             "rules": rules
         ]
-        if let outboundInterface { root["interface-name"] = outboundInterface }
         return try Yams.dump(object: root, sortKeys: true)
     }
 

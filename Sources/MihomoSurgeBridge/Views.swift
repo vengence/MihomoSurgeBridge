@@ -67,7 +67,7 @@ struct OverviewView: View {
                     Button("立即更新全部") { Task { await model.refreshAll() } }
                     Button("检查生成配置") { Task { await model.validateMihomo() } }
                         .help("验证应用生成的 Mihomo YAML 能否被当前 Mihomo 解析；不会测试节点网络，也不会改变运行状态")
-                    Button("测试代理连通性") { Task { await model.testProxyConnectivity() } }
+                    Button("测试首个节点连通性") { Task { await model.testProxyConnectivity() } }
                         .help("使用第一个可用节点，端到端测试本地 SOCKS5、认证路由和外网访问")
                 }
                 .disabled(model.isBusy)

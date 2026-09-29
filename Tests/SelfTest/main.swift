@@ -82,7 +82,10 @@ do {
     let usbYAML = try ConfigurationGenerator.mihomoYAML(
         nodes: first[0].nodes, port: port, outboundInterface: "en5"
     )
-    check(usbYAML.contains("interface-name: en5"), "USB 模式绑定 Mihomo 出口网卡")
+    check(usbYAML.components(separatedBy: "interface-name: en5").count - 1 == first[0].nodes.count,
+          "USB 模式为每个代理节点绑定出口网卡")
+    check(!usbYAML.split(separator: "\n").contains { $0.hasPrefix("interface-name:") },
+          "USB 模式不全局绑定 DNS 出口")
     check(usbYAML.contains("127.0.0.1"), "绑定出口不改变本地 SOCKS5 监听")
     let outputs = ConfigurationGenerator.surgeOutputs(
         processed: first,
