@@ -25,6 +25,7 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
     public var launchAtLogin: Bool
     public var desiredMihomoRunning: Bool
     public var lastScheduledRefreshAt: Date?
+    public var preferredUSBServiceID: String?
 
     public init(
         schemaVersion: Int = 1,
@@ -36,7 +37,8 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
         outputDirectory: String? = nil,
         launchAtLogin: Bool = false,
         desiredMihomoRunning: Bool = false,
-        lastScheduledRefreshAt: Date? = nil
+        lastScheduledRefreshAt: Date? = nil,
+        preferredUSBServiceID: String? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.subscriptions = subscriptions
@@ -48,6 +50,30 @@ public struct AppConfiguration: Codable, Equatable, Sendable {
         self.launchAtLogin = launchAtLogin
         self.desiredMihomoRunning = desiredMihomoRunning
         self.lastScheduledRefreshAt = lastScheduledRefreshAt
+        self.preferredUSBServiceID = preferredUSBServiceID
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, subscriptions, regions, updateIntervalSeconds, mihomoSource
+        case socksPort, outputDirectory, launchAtLogin, desiredMihomoRunning
+        case lastScheduledRefreshAt, preferredUSBServiceID
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            schemaVersion: try values.decode(Int.self, forKey: .schemaVersion),
+            subscriptions: try values.decode([SubscriptionConfiguration].self, forKey: .subscriptions),
+            regions: try values.decode([RegionConfiguration].self, forKey: .regions),
+            updateIntervalSeconds: try values.decode(Int.self, forKey: .updateIntervalSeconds),
+            mihomoSource: try values.decode(MihomoSource.self, forKey: .mihomoSource),
+            socksPort: try values.decodeIfPresent(UInt16.self, forKey: .socksPort),
+            outputDirectory: try values.decodeIfPresent(String.self, forKey: .outputDirectory),
+            launchAtLogin: try values.decode(Bool.self, forKey: .launchAtLogin),
+            desiredMihomoRunning: try values.decode(Bool.self, forKey: .desiredMihomoRunning),
+            lastScheduledRefreshAt: try values.decodeIfPresent(Date.self, forKey: .lastScheduledRefreshAt),
+            preferredUSBServiceID: try values.decodeIfPresent(String.self, forKey: .preferredUSBServiceID)
+        )
     }
 }
 

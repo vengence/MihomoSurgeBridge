@@ -14,6 +14,12 @@ final class AppModel: ObservableObject {
     @Published var statusMessage = "正在准备…"
     @Published private(set) var isBusy = false
     @Published private(set) var hasStarted = false
+    @Published private(set) var outboundSnapshot = OutboundNetworkSnapshot(
+        services: [], preferredServiceName: nil, interfaceName: nil,
+        fallbackReason: nil, defaultNetworkName: "系统默认网络"
+    )
+    @Published private(set) var appliedOutboundInterface: String?
+    @Published private(set) var outboundSwitchError: String?
 
     let paths: AppPaths
     let mihomo = MihomoManager.shared
@@ -23,8 +29,11 @@ final class AppModel: ObservableObject {
     private let client = SubscriptionClient()
     private let installer = ManagedMihomoInstaller()
     private let logger: AppLogger
+    private let outboundObserver = OutboundNetworkObserver()
     private var schedulerTask: Task<Void, Never>?
     private var lastRuntimeSignature: String?
+    private var runtimeOutboundInterface: String?
+    private var networkRefreshInProgress = false
 
     init(root: URL? = nil) {
         let paths = AppPaths(root: root)
@@ -55,11 +64,30 @@ final class AppModel: ObservableObject {
         MihomoLocator.locate(source: configuration.mihomoSource, paths: paths)
     }
 
+    var outboundStatusText: String {
+        if !mihomo.state.isRunning {
+            if let outboundSwitchError {
+                let configured = runtimeOutboundInterface.map { "USB（\($0)）" } ?? "系统默认网络"
+                return "出口切换失败，运行配置仍为\(configured)：\(outboundSwitchError)"
+            }
+            return "下次启动将使用：\(outboundSnapshot.targetDescription)"
+        }
+        if let outboundSwitchError {
+            return "出口切换失败，当前仍使用\(appliedOutboundInterface.map { " USB（\($0)）" } ?? "系统默认网络")：\(outboundSwitchError)"
+        }
+        if let appliedOutboundInterface {
+            return "当前出口：USB（\(appliedOutboundInterface)）"
+        }
+        return "当前出口：系统默认网络（\(outboundSnapshot.defaultNetworkName)）"
+    }
+
     func startupOnce() async {
         guard !hasStarted else { return }
         hasStarted = true
         logger.log("应用启动")
         do {
+            outboundSnapshot = await inspectOutboundNetwork()
+            runtimeOutboundInterface = outboundSnapshot.interfaceName
             try regenerate()
             if configuration.desiredMihomoRunning, !currentNodes.isEmpty, let executable = resolvedMihomo {
                 await mihomo.cleanupOrphan(executable: executable, config: paths.runtimeConfig)
@@ -69,26 +97,51 @@ final class AppModel: ObservableObject {
                     runtime: paths.runtime,
                     logURL: paths.mihomoLog
                 )
+                appliedOutboundInterface = runtimeOutboundInterface
             }
         } catch {
             report(error)
         }
         startScheduler()
+        outboundObserver.start { [weak self] in
+            Task { await self?.refreshOutboundNetwork() }
+        }
         await refreshAutomatically()
     }
 
     func saveConfiguration(regenerate shouldRegenerate: Bool = true) async {
+        isBusy = true
+        defer { isBusy = false }
         do {
             try configurationStore.save(configuration)
             if shouldRegenerate {
                 let before = lastRuntimeSignature
+                let previousInterface = runtimeOutboundInterface
+                let previousYAML = try? Data(contentsOf: paths.runtimeConfig)
+                outboundSnapshot = await inspectOutboundNetwork()
+                runtimeOutboundInterface = outboundSnapshot.interfaceName
                 try regenerate()
                 if mihomo.state.isRunning, before != lastRuntimeSignature {
-                    try await restartMihomoPreservingPreference()
+                    do {
+                        try await restartMihomoPreservingPreference()
+                        outboundSwitchError = nil
+                    } catch {
+                        restoreRuntime(previousYAML, interface: previousInterface, signature: before)
+                        try? await restartMihomoPreservingPreference()
+                        outboundSwitchError = error.localizedDescription
+                        throw error
+                    }
+                } else {
+                    outboundSwitchError = nil
                 }
             }
             statusMessage = "设置已保存"
         } catch { report(error) }
+    }
+
+    func setPreferredUSBServiceID(_ serviceID: String?) async {
+        configuration.preferredUSBServiceID = serviceID
+        await saveConfiguration()
     }
 
     func addOrUpdate(_ subscription: SubscriptionConfiguration) async {
@@ -207,7 +260,9 @@ final class AppModel: ObservableObject {
             port: port,
             outputDirectory: outputDirectory
         )
-        let mihomoYAML = try ConfigurationGenerator.mihomoYAML(nodes: nodes, port: port)
+        let mihomoYAML = try ConfigurationGenerator.mihomoYAML(
+            nodes: nodes, port: port, outboundInterface: runtimeOutboundInterface
+        )
         var files: [URL: Data] = [paths.runtimeConfig: Data(mihomoYAML.utf8)]
         for (name, content) in output.files {
             files[outputDirectory.appendingPathComponent(name)] = Data(content.utf8)
@@ -236,6 +291,11 @@ final class AppModel: ObservableObject {
             statusMessage = "端口被占用，请在设置中更换端口"
             return
         }
+        await refreshOutboundNetwork(force: true)
+        guard runtimeOutboundInterface == outboundSnapshot.interfaceName else {
+            statusMessage = "出口配置尚未切换成功，请检查设置中的回退原因"
+            return
+        }
         isBusy = true
         do {
             await mihomo.cleanupOrphan(executable: executable, config: paths.runtimeConfig)
@@ -246,6 +306,8 @@ final class AppModel: ObservableObject {
                 logURL: paths.mihomoLog
             )
             configuration.desiredMihomoRunning = true
+            appliedOutboundInterface = runtimeOutboundInterface
+            outboundSwitchError = nil
             try configurationStore.save(configuration)
             statusMessage = "Mihomo 已启动"
         } catch { report(error) }
@@ -255,6 +317,7 @@ final class AppModel: ObservableObject {
     func stopMihomo() async {
         isBusy = true
         await mihomo.stop()
+        appliedOutboundInterface = nil
         configuration.desiredMihomoRunning = false
         try? configurationStore.save(configuration)
         statusMessage = "Mihomo 已停止，定时更新继续运行"
@@ -367,15 +430,37 @@ final class AppModel: ObservableObject {
         decoder.dateDecodingStrategy = .iso8601
         let document = try decoder.decode(MigrationDocument.self, from: Data(contentsOf: url))
         guard document.schemaVersion == 1 else { throw StoreError.unsupportedSchema }
+        let previousConfiguration = configuration
+        let previousInterface = runtimeOutboundInterface
+        let previousSignature = lastRuntimeSignature
+        let previousSnapshot = outboundSnapshot
         configuration = document.applying(to: configuration)
         if configuration.socksPort == nil { configuration.socksPort = PortChecker.firstAvailable() }
-        try configurationStore.save(configuration)
-        try regenerate()
-        statusMessage = "配置导入完成，请更新订阅"
+        outboundSnapshot = await inspectOutboundNetwork()
+        runtimeOutboundInterface = outboundSnapshot.interfaceName
+        do {
+            try configurationStore.save(configuration)
+            try regenerate()
+            if mihomo.state.isRunning, previousSignature != lastRuntimeSignature {
+                try await restartMihomoPreservingPreference()
+            }
+            outboundSwitchError = nil
+            statusMessage = "配置导入完成，请更新订阅"
+        } catch {
+            configuration = previousConfiguration
+            runtimeOutboundInterface = previousInterface
+            outboundSnapshot = previousSnapshot
+            try? regenerate()
+            if !mihomo.state.isRunning, previousConfiguration.desiredMihomoRunning {
+                try? await restartMihomoPreservingPreference()
+            }
+            throw error
+        }
     }
 
     func quitApplication() async {
         schedulerTask?.cancel()
+        outboundObserver.stop()
         await mihomo.stop()
         logger.log("应用正常退出，已停止 Mihomo")
         NSApplication.shared.terminate(nil)
@@ -389,12 +474,74 @@ final class AppModel: ObservableObject {
             runtime: paths.runtime,
             logURL: paths.mihomoLog
         )
+        appliedOutboundInterface = runtimeOutboundInterface
     }
 
     private func runtimeSignature(nodes: [RoutedSSRNode]) -> String {
         let port = configuration.socksPort.map(String.init) ?? "none"
         let executable = resolvedMihomo?.path ?? "missing"
-        return ([port, executable] + nodes.map(\.identity)).joined(separator: ":")
+        return ([port, executable, runtimeOutboundInterface ?? "system"] + nodes.map(\.identity))
+            .joined(separator: ":")
+    }
+
+    private func inspectOutboundNetwork() async -> OutboundNetworkSnapshot {
+        let serviceID = configuration.preferredUSBServiceID
+        return await Task.detached(priority: .utility) {
+            OutboundNetworkDetector.inspect(preferredServiceID: serviceID)
+        }.value
+    }
+
+    func refreshOutboundNetwork(force: Bool = false) async {
+        while force && networkRefreshInProgress {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        guard !networkRefreshInProgress, !isBusy else { return }
+        networkRefreshInProgress = true
+        defer { networkRefreshInProgress = false }
+        let serviceID = configuration.preferredUSBServiceID
+        let snapshot = await inspectOutboundNetwork()
+        guard serviceID == configuration.preferredUSBServiceID else { return }
+        outboundSnapshot = snapshot
+        guard snapshot.interfaceName != runtimeOutboundInterface else {
+            outboundSwitchError = nil
+            return
+        }
+        let previousInterface = runtimeOutboundInterface
+        let previousSignature = lastRuntimeSignature
+        let previousYAML = try? Data(contentsOf: paths.runtimeConfig)
+        let candidate = paths.runtime.appendingPathComponent("mihomo-candidate.yaml")
+        defer { try? FileManager.default.removeItem(at: candidate) }
+        do {
+            let yaml = try ConfigurationGenerator.mihomoYAML(
+                nodes: currentNodes,
+                port: configuration.socksPort ?? 17_892,
+                outboundInterface: snapshot.interfaceName
+            )
+            try Data(yaml.utf8).write(to: candidate, options: .atomic)
+            if let executable = resolvedMihomo {
+                _ = try await mihomo.validate(executable: executable, config: candidate)
+            }
+            guard serviceID == configuration.preferredUSBServiceID else { return }
+            try Data(yaml.utf8).write(to: paths.runtimeConfig, options: .atomic)
+            runtimeOutboundInterface = snapshot.interfaceName
+            lastRuntimeSignature = runtimeSignature(nodes: currentNodes)
+            if mihomo.state.isRunning { try await restartMihomoPreservingPreference() }
+            outboundSwitchError = nil
+            logger.log("代理出口切换为：\(snapshot.targetDescription)")
+        } catch {
+            restoreRuntime(previousYAML, interface: previousInterface, signature: previousSignature)
+            if !mihomo.state.isRunning, configuration.desiredMihomoRunning {
+                try? await restartMihomoPreservingPreference()
+            }
+            outboundSwitchError = error.localizedDescription
+            logger.log("代理出口切换失败：\(error.localizedDescription)")
+        }
+    }
+
+    private func restoreRuntime(_ yaml: Data?, interface: String?, signature: String?) {
+        if let yaml { try? yaml.write(to: paths.runtimeConfig, options: .atomic) }
+        runtimeOutboundInterface = interface
+        lastRuntimeSignature = signature
     }
 
     private func startScheduler() {

@@ -78,6 +78,12 @@ do {
     let yaml = try ConfigurationGenerator.mihomoYAML(nodes: first[0].nodes, port: port)
     check(yaml.contains("IN-USER"), "生成 IN-USER 路由")
     check(yaml.contains("127.0.0.1"), "仅监听本地回环")
+    check(!yaml.contains("interface-name"), "系统自动模式不绑定出口网卡")
+    let usbYAML = try ConfigurationGenerator.mihomoYAML(
+        nodes: first[0].nodes, port: port, outboundInterface: "en5"
+    )
+    check(usbYAML.contains("interface-name: en5"), "USB 模式绑定 Mihomo 出口网卡")
+    check(usbYAML.contains("127.0.0.1"), "绑定出口不改变本地 SOCKS5 监听")
     let outputs = ConfigurationGenerator.surgeOutputs(
         processed: first,
         regions: RegionConfiguration.defaults,
@@ -95,9 +101,18 @@ do {
     configuration.socksPort = 19_999
     configuration.outputDirectory = "/private/tmp/output"
     configuration.mihomoSource = .homebrew
+    configuration.preferredUSBServiceID = "test-service-id"
     configuration.subscriptions = [subscription]
     let imported = MigrationDocument(configuration: configuration).applying()
     check(imported.socksPort == nil && imported.outputDirectory == nil, "迁移不携带机器路径和端口")
+    check(imported.preferredUSBServiceID == nil, "迁移不携带设备专属网络服务")
+    let encoder = JSONEncoder()
+    let encoded = try encoder.encode(configuration)
+    var legacyJSON = try JSONSerialization.jsonObject(with: encoded) as! [String: Any]
+    legacyJSON.removeValue(forKey: "preferredUSBServiceID")
+    let legacyData = try JSONSerialization.data(withJSONObject: legacyJSON)
+    let loadedLegacy = try JSONDecoder().decode(AppConfiguration.self, from: legacyData)
+    check(loadedLegacy.preferredUSBServiceID == nil, "旧版配置默认系统自动")
 
     let mihomoPath = ["/opt/homebrew/bin/mihomo", "/usr/local/bin/mihomo"]
         .first { FileManager.default.isExecutableFile(atPath: $0) }

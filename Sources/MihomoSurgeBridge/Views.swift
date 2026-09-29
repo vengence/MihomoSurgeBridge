@@ -430,6 +430,42 @@ struct SettingsDiagnosticsView: View {
                     .padding(6)
                 }
 
+                GroupBox("代理出口网络") {
+                    Form {
+                        Picker("出口方式", selection: Binding<String>(
+                            get: { model.configuration.preferredUSBServiceID ?? "" },
+                            set: { value in
+                                Task { await model.setPreferredUSBServiceID(value.isEmpty ? nil : value) }
+                            }
+                        )) {
+                            Text("系统自动").tag("")
+                            ForEach(model.outboundSnapshot.services) { service in
+                                Text("优先 \(service.name)\(service.interfaceName.map { "（\($0)）" } ?? "")")
+                                    .tag(service.id)
+                            }
+                            if let selected = model.configuration.preferredUSBServiceID,
+                               !model.outboundSnapshot.services.contains(where: { $0.id == selected }) {
+                                Text("已选 USB 服务暂不可见").tag(selected)
+                            }
+                        }
+                        HStack {
+                            Text(model.outboundStatusText)
+                                .textSelection(.enabled)
+                            Spacer()
+                            Button("重新检测") { Task { await model.refreshOutboundNetwork(force: true) } }
+                                .disabled(model.isBusy)
+                        }
+                        if let reason = model.outboundSnapshot.fallbackReason {
+                            Text("已撤销 USB 出口绑定；系统默认出口：\(model.outboundSnapshot.defaultNetworkName)。原因：\(reason)")
+                                .foregroundStyle(.orange)
+                        }
+                        Text("USB 与 Wi-Fi 同时使用时，请在 macOS 网络设置中关闭该 USB 服务的“需要时启用”。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(6)
+                }
+
                 GroupBox("本地端口与输出") {
                     Form {
                         HStack {
@@ -480,16 +516,20 @@ struct SettingsDiagnosticsView: View {
                         Text("有效节点：\(model.currentNodes.count)")
                         Text("更新频率：每 1 小时")
                         Text("状态：\(model.statusMessage)").textSelection(.enabled)
+                        Text("代理出口：\(model.outboundStatusText)").textSelection(.enabled)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(6)
                 }
                 Button("保存设置") { Task { await model.saveConfiguration() } }
                     .buttonStyle(.borderedProminent)
-                Text(appVersionDescription)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .center)
+                HStack(spacing: 8) {
+                    Text(appVersionDescription)
+                    Link("github.com/vengence/MihomoSurgeBridge",
+                         destination: URL(string: "https://github.com/vengence/MihomoSurgeBridge")!)
+                }
+                .font(.caption)
+                .frame(maxWidth: .infinity, alignment: .center)
             }
             .padding(24)
         }

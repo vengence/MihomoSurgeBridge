@@ -2,7 +2,11 @@ import Foundation
 import Yams
 
 public enum ConfigurationGenerator {
-    public static func mihomoYAML(nodes: [RoutedSSRNode], port: UInt16) throws -> String {
+    public static func mihomoYAML(
+        nodes: [RoutedSSRNode],
+        port: UInt16,
+        outboundInterface: String? = nil
+    ) throws -> String {
         let proxies: [[String: Any]] = nodes.map { node in
             var fields = node.fields.mapValues(\.anyValue)
             fields["name"] = node.internalName
@@ -11,7 +15,7 @@ public enum ConfigurationGenerator {
         }
         let users = nodes.map { ["username": $0.username, "password": $0.password] }
         let rules = nodes.map { "IN-USER,\($0.username),\($0.internalName)" } + ["MATCH,REJECT"]
-        let root: [String: Any] = [
+        var root: [String: Any] = [
             "mode": "rule",
             "log-level": "warning",
             "ipv6": true,
@@ -27,6 +31,7 @@ public enum ConfigurationGenerator {
             "proxies": proxies,
             "rules": rules
         ]
+        if let outboundInterface { root["interface-name"] = outboundInterface }
         return try Yams.dump(object: root, sortKeys: true)
     }
 

@@ -20,6 +20,8 @@ Surge 不支持 SSR。MihomoSurgeBridge 是一个 macOS 菜单栏工具，用 Mi
 
 应用启动时会先使用缓存，并在后台立即更新订阅；之后每小时更新一次。
 
+“设置与诊断”中的“代理出口网络”默认使用系统网络。也可以选择一个 USB 网络服务作为优先出口：USB 可联网时 Mihomo 使用该网卡，断开或无法联网时自动回退到系统默认网络，恢复后再切回 USB。此设置只影响 Mihomo 的外网连接，不修改 Surge 直连规则。若要让 USB 与 Wi-Fi 同时保持可用，请在 macOS 网络设置中关闭该 USB 服务的“需要时启用”。
+
 ## 构建
 
 需要 Swift 6 和 Apple Command Line Tools：

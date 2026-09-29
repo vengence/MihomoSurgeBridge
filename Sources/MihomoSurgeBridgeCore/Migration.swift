@@ -27,6 +27,7 @@ public struct MigrationDocument: Codable, Equatable, Sendable {
         result.socksPort = nil
         result.outputDirectory = nil
         result.mihomoSource = .automatic
+        result.preferredUSBServiceID = nil
         return result
     }
 }
